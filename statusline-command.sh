@@ -20,7 +20,7 @@ MODEL_ID=$(echo "$STDIN" | jq -r '.model.id // ""' 2>/dev/null)
 case "$MODEL_ID" in
   *opus*)   MODEL_SYMBOL="*" ;;
   *sonnet*) MODEL_SYMBOL="✦" ;;
-  *haiku*)  MODEL_SYMBOL="●" ;;
+  *haiku*)  MODEL_SYMBOL="◦" ;;
   *)        MODEL_SYMBOL="" ;;
 esac
 
