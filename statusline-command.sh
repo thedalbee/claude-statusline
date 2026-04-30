@@ -1,140 +1,107 @@
 #!/bin/bash
-# Claude Code Custom Statusline (jq optimized)
+# Claude Code Statusline — [model-symbol] | directory | branch | ctx N% | 5h M% | 1w K%
 
-# ANSI colors
-ORANGE='\033[38;5;208m'
 BLUE='\033[34m'
 PURPLE='\033[35m'
 GREEN='\033[32m'
 YELLOW='\033[33m'
 RED='\033[31m'
+ORANGE='\033[38;5;214m'
 DIM='\033[90m'
 RST='\033[0m'
 
-# Read stdin JSON once
 STDIN=""
 if [ ! -t 0 ]; then
   STDIN=$(cat)
 fi
 
-# Parse all values in a single jq call
+# Model symbol
+MODEL_ID=$(echo "$STDIN" | jq -r '.model.id // ""' 2>/dev/null)
+case "$MODEL_ID" in
+  *opus*)   MODEL_SYMBOL="*" ;;
+  *sonnet*) MODEL_SYMBOL="✦" ;;
+  *haiku*)  MODEL_SYMBOL="●" ;;
+  *)        MODEL_SYMBOL="" ;;
+esac
+
+# Directory (shortened)
+CWD=$(echo "$STDIN" | jq -r '.cwd // ""' 2>/dev/null)
+if [ -z "$CWD" ]; then
+  CWD="$(pwd)"
+fi
+SHORT_DIR="${CWD/#$HOME/~}"
+
+# Git branch
+GIT_BRANCH=""
+if [ -d "${CWD}/.git" ] || git -C "$CWD" rev-parse --git-dir >/dev/null 2>&1; then
+  GIT_BRANCH=$(git -C "$CWD" symbolic-ref --short HEAD 2>/dev/null)
+fi
+
 eval "$(echo "$STDIN" | jq -r '
-def make_bar(pct): (((pct + 10) / 20) | floor) as $filled |
-  if $filled > 5 then 5 elif $filled < 0 then 0 else $filled end |
-  . as $f | ("■" * $f) + ("□" * (5 - $f));
-
-def reset_str(epoch; days):
-  if epoch == null or epoch == 0 then ""
-  else ((epoch - now) | floor) as $diff |
-    if $diff <= 0 then ""
-    elif days then
-      (($diff / 86400 | floor) | tostring) + "d" + (($diff % 86400 / 3600 | floor) | tostring) + "h"
-    else
-      (($diff / 3600 | floor) | tostring) + "h" + (($diff % 3600 / 60 | floor) | tostring | if length < 2 then "0" + . else . end) + "m"
-    end
-  end;
-
 def color_tier(pct; lo; hi):
   if pct < lo then "GREEN" elif pct < hi then "YELLOW" else "RED" end;
 
-(.model.id // "") as $model |
-((.context_window.used_percentage // "") | tostring) as $ctx |
-(.cwd // "") as $cwd |
+((.context_window.used_percentage // "") | if . == "" then "" else floor | tostring end) as $ctx |
 (.rate_limits.five_hour // {}) as $five |
 (.rate_limits.seven_day // {}) as $week |
 
-# 5h rate limit
-(if ($five | has("used_percentage")) then
-  ($five.used_percentage | floor) as $p5 |
-  "RL5_CLR=\"" + color_tier($p5; 50; 80) + "\"\n" +
-  "RL5_TXT=\"5h " + make_bar($p5) + "(" + ($p5|tostring) + "%)" +
-    (reset_str($five.resets_at; false) | if . != "" then "(" + . + ")" else "" end) + "\""
-else
-  "RL5_CLR=\"\"\nRL5_TXT=\"\""
-end) + "\n" +
-
-# 1w rate limit
-(if ($week | has("used_percentage")) then
-  ($week.used_percentage | floor) as $pw |
-  "RL1W_CLR=\"" + color_tier($pw; 50; 80) + "\"\n" +
-  "RL1W_TXT=\"1w " + make_bar($pw) + "(" + ($pw|tostring) + "%)" +
-    (reset_str($week.resets_at; true) | if . != "" then "(" + . + ")" else "" end) + "\""
-else
-  "RL1W_CLR=\"\"\nRL1W_TXT=\"\""
-end) + "\n" +
-
-"MODEL_ID=\"" + $model + "\"\n" +
 "CTX_PCT=\"" + $ctx + "\"\n" +
-"STDIN_CWD=\"" + $cwd + "\""
+
+(if ($five | has("used_percentage")) then
+  ($five.used_percentage | floor) as $p |
+  "RL5_PCT=\"" + ($p|tostring) + "\"\nRL5_CLR=\"" + color_tier($p; 50; 80) + "\""
+else "RL5_PCT=\"\"\nRL5_CLR=\"\"" end) + "\n" +
+
+(if ($week | has("used_percentage")) then
+  ($week.used_percentage | floor) as $p |
+  "RL1W_PCT=\"" + ($p|tostring) + "\"\nRL1W_CLR=\"" + color_tier($p; 50; 80) + "\""
+else "RL1W_PCT=\"\"\nRL1W_CLR=\"\"" end)
 ' 2>/dev/null)"
 
-# ── Model symbol (orange) ──
-case "$MODEL_ID" in
-  *opus*)   STARS="${ORANGE}✳${RST}" ;;
-  *sonnet*) STARS="${ORANGE}✦${RST}" ;;
-  *haiku*)  STARS="${ORANGE}•${RST}" ;;
-  *)        STARS="${DIM}·${RST}"    ;;
-esac
+# Color helper
+colorize() {
+  local clr="$1" val="$2"
+  case "$clr" in
+    GREEN)  printf "${GREEN}%s${RST}" "$val" ;;
+    YELLOW) printf "${YELLOW}%s${RST}" "$val" ;;
+    RED)    printf "${RED}%s${RST}" "$val" ;;
+    *)      printf "%s" "$val" ;;
+  esac
+}
 
-# ── Directory (blue, shorten home) ──
-DIR="${STDIN_CWD:-$PWD}"
-DIR="${DIR/#$HOME/~}"
-if [ "$(echo "$DIR" | tr '/' '\n' | wc -l)" -gt 3 ]; then
-  DIR="…/$(echo "$DIR" | rev | cut -d'/' -f1-2 | rev)"
-fi
-DIR="${BLUE}${DIR}${RST}"
+SEP="${DIM} | ${RST}"
 
-# ── Git info (purple) ──
-GIT=""
-if BRANCH=$(git -C "${STDIN_CWD:-$PWD}" rev-parse --abbrev-ref HEAD 2>/dev/null); then
-  GIT="${PURPLE}⎇ ${BRANCH}${RST}"
+# model symbol
+if [ -n "$MODEL_SYMBOL" ]; then
+  OUT="${ORANGE}${MODEL_SYMBOL}${RST}${SEP}"
+else
+  OUT=""
 fi
 
-# ── Context battery bar (5 blocks, 30/60 thresholds) ──
-CTX=""
+# directory
+OUT="${OUT}${BLUE}${SHORT_DIR}${RST}"
+
+# branch
+if [ -n "$GIT_BRANCH" ]; then
+  OUT="${OUT}${SEP}${PURPLE}${GIT_BRANCH}${RST}"
+fi
+
+# ctx
 if [ -n "$CTX_PCT" ]; then
-  CTX_INT="${CTX_PCT%.*}"
-  if [ "$CTX_INT" -lt 30 ] 2>/dev/null; then
-    CTX_CLR="$GREEN"
-  elif [ "$CTX_INT" -lt 60 ] 2>/dev/null; then
-    CTX_CLR="$YELLOW"
-  else
-    CTX_CLR="$RED"
-  fi
-  FILLED=$(( (CTX_INT + 10) / 20 ))
-  [ "$FILLED" -gt 5 ] && FILLED=5
-  [ "$FILLED" -lt 0 ] && FILLED=0
-  EMPTY=$(( 5 - FILLED ))
-  BAR=""
-  for ((i=0; i<FILLED; i++)); do BAR="${BAR}■"; done
-  for ((i=0; i<EMPTY; i++)); do BAR="${BAR}□"; done
-  CTX="${CTX_CLR}${BAR} ${CTX_INT}%${RST}"
+  if [ "$CTX_PCT" -lt 30 ] 2>/dev/null; then CTX_CLR="GREEN"
+  elif [ "$CTX_PCT" -lt 60 ] 2>/dev/null; then CTX_CLR="YELLOW"
+  else CTX_CLR="RED"; fi
+  OUT="${OUT}${SEP}${DIM}ctx ${RST}$(colorize "$CTX_CLR" "${CTX_PCT}%")"
 fi
 
-# ── Rate limits ──
-RL5="" RL1W=""
-if [ -n "$RL5_TXT" ]; then
-  case "$RL5_CLR" in
-    GREEN)  RL5="${GREEN}${RL5_TXT}${RST}" ;;
-    YELLOW) RL5="${YELLOW}${RL5_TXT}${RST}" ;;
-    RED)    RL5="${RED}${RL5_TXT}${RST}" ;;
-  esac
-fi
-if [ -n "$RL1W_TXT" ]; then
-  case "$RL1W_CLR" in
-    GREEN)  RL1W="${GREEN}${RL1W_TXT}${RST}" ;;
-    YELLOW) RL1W="${YELLOW}${RL1W_TXT}${RST}" ;;
-    RED)    RL1W="${RED}${RL1W_TXT}${RST}" ;;
-  esac
+# 5h
+if [ -n "$RL5_PCT" ]; then
+  OUT="${OUT}${SEP}${DIM}5h ${RST}$(colorize "$RL5_CLR" "${RL5_PCT}%")"
 fi
 
-# ── Assemble ──
-SEP="${DIM} │ ${RST}"
-OUT="$STARS"
-[ -n "$DIR" ]  && OUT="${OUT}${SEP}${DIR}"
-[ -n "$GIT" ]  && OUT="${OUT}${SEP}${GIT}"
-[ -n "$CTX" ]  && OUT="${OUT}${SEP}${CTX}"
-[ -n "$RL5" ]  && OUT="${OUT}${SEP}${RL5}"
-[ -n "$RL1W" ] && OUT="${OUT}${SEP}${RL1W}"
+# 1w
+if [ -n "$RL1W_PCT" ]; then
+  OUT="${OUT}${SEP}${DIM}1w ${RST}$(colorize "$RL1W_CLR" "${RL1W_PCT}%")"
+fi
 
-echo -e "$OUT"
+printf "%b\n" "$OUT"
